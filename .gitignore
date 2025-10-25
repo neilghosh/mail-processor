@@ -1,1 +1,55 @@
+# Dependencies
 node_modules
+package-lock.json
+yarn.lock
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Build artifacts
+dist/
+build/
+*.tsbuildinfo
+
+# IDE and Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Google Cloud credentials
+*.json
+!package.json
+!tsconfig.json
+service-account-key.json
+demoneil-*.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+.cache/
+
+# Testing
+coverage/
+.nyc_output/
+
+# Production
+.env.production
+*.pem

@@ -29,7 +29,11 @@ export function encrypt(text: string): string {
 /**
  * Decrypts a string encrypted with aes-256-cbc.
  */
-export function decrypt(text: string): string {
+export function decrypt(text: string | null): string | null {
+    if (!text) {
+        return null;
+    }
+
     const textParts = text.split(':');
     const ivString = textParts.shift();
 
