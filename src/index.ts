@@ -79,10 +79,21 @@ async function sendEmailViaGmail(gmail: any, to: string, subject: string, htmlBo
 // Trust the proxy to get the correct protocol (http vs https)
 app.set('trust proxy', 1);
 
+// Debug: Check if public folder exists
+import { existsSync, readdirSync } from 'fs';
+import { join } from 'path';
+const publicPath = join(process.cwd(), 'public');
+console.log(`[DEBUG] Current working directory: ${process.cwd()}`);
+console.log(`[DEBUG] Public folder path: ${publicPath}`);
+console.log(`[DEBUG] Public folder exists: ${existsSync(publicPath)}`);
+if (existsSync(publicPath)) {
+    console.log(`[DEBUG] Public folder contents: ${readdirSync(publicPath).join(', ')}`);
+}
+
 app.use(express.static('public'));
 
-// Hardcoded redirect URI. This may need to be updated if the environment changes.
-const redirectUri = 'http://localhost:8080/auth/google/callback';
+// Dynamic redirect URI based on environment
+const redirectUri = process.env.REDIRECT_URI || `http://localhost:${port}/auth/google/callback`;
 
 // Middleware to authenticate API requests (simple token-based auth)
 function authenticateRequest(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -198,7 +209,7 @@ app.get('/auth/google/callback', async (req, res) => {
     }
 });
 
-app.post('/api/tasks/process-emails', async (req, res) => {
+app.post('/api/tasks/process-emails', authenticateRequest, async (req, res) => {
     console.log('\n📧 ====== EMAIL PROCESSING STARTED ======');
     const startTime = Date.now();
     
