@@ -92,8 +92,16 @@ if (existsSync(publicPath)) {
 
 app.use(express.static('public'));
 
-// Dynamic redirect URI based on environment
-const redirectUri = process.env.REDIRECT_URI || `http://localhost:${port}/auth/google/callback`;
+// Helper to get redirect URI based on request
+function getRedirectUri(req: express.Request): string {
+    if (process.env.REDIRECT_URI) {
+        return process.env.REDIRECT_URI;
+    }
+    // Build from request for local development
+    const protocol = req.protocol;
+    const host = req.get('host');
+    return `${protocol}://${host}/auth/google/callback`;
+}
 
 // Middleware to authenticate API requests (simple token-based auth)
 function authenticateRequest(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -120,6 +128,9 @@ function authenticateRequest(req: express.Request, res: express.Response, next: 
 
 // Route to start the Google authentication flow
 app.get('/auth/google', (req, res) => {
+    const redirectUri = getRedirectUri(req);
+    console.log(`[DEBUG] OAuth redirect URI: ${redirectUri}`);
+    
     const oauth2Client = new google.auth.OAuth2(
         process.env.GOOGLE_CLIENT_ID,
         process.env.GOOGLE_CLIENT_SECRET,
@@ -144,6 +155,8 @@ app.get('/auth/google', (req, res) => {
 
 // The callback route that Google redirects to
 app.get('/auth/google/callback', async (req, res) => {
+    const redirectUri = getRedirectUri(req);
+    
     const oauth2Client = new google.auth.OAuth2(
         process.env.GOOGLE_CLIENT_ID,
         process.env.GOOGLE_CLIENT_SECRET,
