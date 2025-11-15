@@ -75,7 +75,7 @@ export async function downloadPdfAttachment(
 export async function isPasswordProtected(pdfPath: string): Promise<boolean> {
     try {
         // Try to check the PDF with qpdf
-        const { stdout, stderr } = await execPromise(`qpdf --check "${pdfPath}" 2>&1`);
+        const { stdout, stderr } = await execPromise(`qpdf --check '${pdfPath}' 2>&1`);
         const output = stdout + stderr;
         
         // If qpdf reports encryption, the PDF is password protected
@@ -94,12 +94,15 @@ export async function decryptPdf(pdfPath: string, password: string): Promise<str
     try {
         const decryptedPath = pdfPath.replace('.pdf', '_decrypted.pdf');
         
-        console.log(`      🔓 Attempting to decrypt with provided password...`);
+        console.log(`      🔓 Attempting to decrypt PDF...`);
         
-        // Use qpdf to decrypt
-        await execPromise(`qpdf --decrypt --password="${password}" "${pdfPath}" "${decryptedPath}"`);
+        // Escape password to prevent command injection
+        const escapedPassword = password.replace(/'/g, "'\\''");
         
-        console.log(`      ✅ Successfully decrypted to ${decryptedPath}`);
+        // Use qpdf to decrypt with proper escaping
+        await execPromise(`qpdf --decrypt --password='${escapedPassword}' '${pdfPath}' '${decryptedPath}'`);
+        
+        console.log(`      ✅ Successfully decrypted PDF`);
         return decryptedPath;
     } catch (error: any) {
         console.error(`      ❌ Decryption failed:`, error.message);
