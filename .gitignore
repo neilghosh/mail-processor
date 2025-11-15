@@ -53,3 +53,11 @@ coverage/
 # Production
 .env.production
 *.pem
+
+# Backup and script files
+.env.bak
+create-pr.sh
+server.pid
+
+# GitHub workflows (managed separately)
+.github/
