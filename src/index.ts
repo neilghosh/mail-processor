@@ -3,6 +3,16 @@ import express from 'express';
 import { Datastore } from '@google-cloud/datastore';
 import { google } from 'googleapis';
 import { encrypt, decrypt } from './utils/crypto';
+import { 
+    downloadPdfAttachment, 
+    decryptPdf, 
+    getPasswordForSubject, 
+    cleanupTempFiles, 
+    extractPdfAttachments,
+    isPasswordProtected,
+    PdfProcessingResult 
+} from './utils/pdf';
+import { getPromptForSubject, analyzeMultiplePdfs } from './utils/gemini';
 import 'dotenv/config';
 
 const app = express();
@@ -291,8 +301,21 @@ app.post('/api/tasks/process-emails', authenticateRequest, async (req, res) => {
                 console.log(`   📩 Message IDs: ${(response.data.messages || []).map(m => m.id).join(', ') || 'none'}`);
 
                 // Fetch detailed information for each message
-                console.log('   � Fetching email details...');
-                const emailDetails: Array<{ subject: string; from: string; timestamp: string; date: Date }> = [];
+                console.log('   📄 Fetching email details...');
+                interface EmailDetail {
+                    subject: string;
+                    from: string;
+                    timestamp: string;
+                    date: Date;
+                    pdfAttachments?: Array<{
+                        filename: string;
+                        size: number;
+                        decryptionStatus: string;
+                        error?: string;
+                    }>;
+                    geminiAnalysis?: string;
+                }
+                const emailDetails: EmailDetail[] = [];
 
                 if (response.data.messages && response.data.messages.length > 0) {
                     for (const message of response.data.messages) {
@@ -310,13 +333,120 @@ app.post('/api/tasks/process-emails', authenticateRequest, async (req, res) => {
                             const internalDate = fullMessage.data.internalDate;
                             const messageDate = new Date(parseInt(internalDate as string || Date.now().toString()));
 
-                            emailDetails.push({
+                            console.log(`     - ${subject} (from ${from})`);
+
+                            const emailDetail: EmailDetail = {
                                 subject,
                                 from,
                                 timestamp: date,
                                 date: messageDate
-                            });
-                            console.log(`     - ${subject} (from ${from})`);
+                            };
+
+                            // Extract PDF attachments
+                            const pdfAttachments = extractPdfAttachments(fullMessage.data);
+                            
+                            if (pdfAttachments.length > 0) {
+                                console.log(`      📎 Found ${pdfAttachments.length} PDF attachment(s)`);
+                                
+                                const pdfResults: PdfProcessingResult[] = [];
+                                const tempDir = `/tmp/mail-attachments/${user.google_id}/${message.id}`;
+
+                                // Process each PDF
+                                for (const attachment of pdfAttachments) {
+                                    // Skip files larger than 10MB
+                                    if (attachment.size > 10 * 1024 * 1024) {
+                                        console.log(`      ⏭️  Skipping ${attachment.filename} (too large: ${Math.round(attachment.size / 1024 / 1024)}MB)`);
+                                        pdfResults.push({
+                                            filename: attachment.filename,
+                                            size: attachment.size,
+                                            decryptionStatus: 'skipped',
+                                            error: 'File too large (>10MB)'
+                                        });
+                                        continue;
+                                    }
+
+                                    // Download PDF
+                                    const pdfPath = await downloadPdfAttachment(
+                                        gmail,
+                                        'me',
+                                        message.id!,
+                                        attachment.attachmentId,
+                                        attachment.filename
+                                    );
+
+                                    if (!pdfPath) {
+                                        pdfResults.push({
+                                            filename: attachment.filename,
+                                            size: attachment.size,
+                                            decryptionStatus: 'failed',
+                                            error: 'Download failed'
+                                        });
+                                        continue;
+                                    }
+
+                                    // Check if password protected
+                                    const isProtected = await isPasswordProtected(pdfPath);
+                                    
+                                    let finalPath = pdfPath;
+                                    let decryptionStatus: 'success' | 'failed' | 'not_needed' | 'skipped' = 'not_needed';
+
+                                    if (isProtected) {
+                                        console.log(`      🔒 PDF is password protected`);
+                                        const password = getPasswordForSubject(subject);
+                                        
+                                        if (password) {
+                                            const decryptedPath = await decryptPdf(pdfPath, password);
+                                            if (decryptedPath) {
+                                                finalPath = decryptedPath;
+                                                decryptionStatus = 'success';
+                                            } else {
+                                                decryptionStatus = 'failed';
+                                            }
+                                        } else {
+                                            console.log(`      ⚠️  No password found for subject keywords`);
+                                            decryptionStatus = 'skipped';
+                                        }
+                                    }
+
+                                    pdfResults.push({
+                                        filename: attachment.filename,
+                                        size: attachment.size,
+                                        decryptionStatus,
+                                        filePath: decryptionStatus !== 'failed' ? finalPath : undefined
+                                    });
+                                }
+
+                                // Analyze with Gemini if subject matches a prompt
+                                const prompt = getPromptForSubject(subject);
+                                
+                                if (prompt && process.env.GEMINI_API_KEY) {
+                                    try {
+                                        console.log(`      🤖 Analyzing PDFs with Gemini AI...`);
+                                        const analysis = await analyzeMultiplePdfs(pdfResults, prompt);
+                                        emailDetail.geminiAnalysis = analysis;
+                                    } catch (geminiError: any) {
+                                        console.error(`      ❌ Gemini analysis failed:`, geminiError.message);
+                                        emailDetail.geminiAnalysis = `Analysis failed: ${geminiError.message}`;
+                                    }
+                                } else if (!prompt) {
+                                    console.log(`      ⏭️  No matching prompt for subject, skipping Gemini analysis`);
+                                } else {
+                                    console.log(`      ⚠️  GEMINI_API_KEY not set, skipping analysis`);
+                                }
+
+                                // Add PDF attachment info to email detail
+                                emailDetail.pdfAttachments = pdfResults.map(pdf => ({
+                                    filename: pdf.filename,
+                                    size: pdf.size,
+                                    decryptionStatus: pdf.decryptionStatus,
+                                    error: pdf.error
+                                }));
+
+                                // Cleanup temp files
+                                cleanupTempFiles(tempDir);
+                            }
+
+                            emailDetails.push(emailDetail);
                         } catch (detailError) {
                             console.warn(`     - Failed to fetch details for message ${message.id}`);
                         }
@@ -354,13 +484,62 @@ app.post('/api/tasks/process-emails', authenticateRequest, async (req, res) => {
                                     <th style="padding: 10px; text-align: left; color: #4285F4;">Subject</th>
                                     <th style="padding: 10px; text-align: left; color: #4285F4;">Date</th>
                                 </tr>
-                                ${emailDetails.map(email => `
-                                    <tr style="border-bottom: 1px solid #ddd;">
-                                        <td style="padding: 10px; font-size: 12px; word-break: break-word;">${email.from}</td>
-                                        <td style="padding: 10px; font-size: 12px; font-weight: 500;">${email.subject}</td>
-                                        <td style="padding: 10px; font-size: 12px; white-space: nowrap;">${email.date.toLocaleString()}</td>
-                                    </tr>
-                                `).join('')}
+                                ${emailDetails.map(email => {
+                                    let rowHtml = `
+                                        <tr style="border-bottom: 1px solid #ddd;">
+                                            <td style="padding: 10px; font-size: 12px; word-break: break-word;">${escapeHtml(email.from)}</td>
+                                            <td style="padding: 10px; font-size: 12px; font-weight: 500;">${escapeHtml(email.subject)}</td>
+                                            <td style="padding: 10px; font-size: 12px; white-space: nowrap;">${email.date.toLocaleString()}</td>
+                                        </tr>
+                                    `;
+                                    
+                                    // Add PDF attachments row if present
+                                    if (email.pdfAttachments && email.pdfAttachments.length > 0) {
+                                        const statusIcon = (status: string) => {
+                                            switch(status) {
+                                                case 'success': return '🔓 Decrypted ✓';
+                                                case 'not_needed': return '✓ No password needed';
+                                                case 'failed': return '❌ Decryption failed';
+                                                case 'skipped': return '⏭️ Skipped';
+                                                default: return status;
+                                            }
+                                        };
+                                        
+                                        const formatSize = (bytes: number) => {
+                                            if (bytes < 1024) return bytes + ' B';
+                                            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+                                            return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+                                        };
+                                        
+                                        rowHtml += `
+                                            <tr style="border-bottom: 1px solid #ddd;">
+                                                <td colspan="3" style="padding: 10px; background-color: #f9f9f9;">
+                                                    <div style="margin-top: 10px; border-top: 2px solid #eee; padding-top: 10px;">
+                                                        <h4 style="color: #4285F4; margin: 5px 0;">📎 PDF Attachments Analyzed</h4>
+                                                        <ul style="margin: 10px 0; padding-left: 20px;">
+                                                            ${email.pdfAttachments.map(pdf => `
+                                                                <li style="margin: 5px 0; font-size: 12px;">
+                                                                    <strong>${escapeHtml(pdf.filename)}</strong> 
+                                                                    (${formatSize(pdf.size)}) - 
+                                                                    ${statusIcon(pdf.decryptionStatus)}
+                                                                    ${pdf.error ? `<br/><span style="color: #d93025;">Error: ${escapeHtml(pdf.error)}</span>` : ''}
+                                                                </li>
+                                                            `).join('')}
+                                                        </ul>
+                                                    </div>
+                                                    ${email.geminiAnalysis ? `
+                                                        <div style="background: #e8f0fe; padding: 15px; border-radius: 5px; margin-top: 10px; border-left: 4px solid #4285F4;">
+                                                            <strong style="color: #4285F4;">🤖 AI Insights:</strong>
+                                                            <div style="margin-top: 10px; font-size: 12px; white-space: pre-wrap; line-height: 1.5;">${escapeHtml(email.geminiAnalysis)}</div>
+                                                        </div>
+                                                    ` : ''}
+                                                </td>
+                                            </tr>
+                                        `;
+                                    }
+                                    
+                                    return rowHtml;
+                                }).join('')}
                             </table>
                         </div>
                     `;
