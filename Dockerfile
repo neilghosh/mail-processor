@@ -14,6 +14,9 @@ RUN npm run build
 # Production stage
 FROM node:18-slim
 
+# Install qpdf for PDF decryption
+RUN apt-get update && apt-get install -y qpdf && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /usr/src/app
 
 COPY package*.json ./
