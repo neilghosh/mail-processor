@@ -40,16 +40,31 @@ export async function uploadFileToGemini(filePath: string, mimeType: string): Pr
         throw new Error('GEMINI_API_KEY environment variable is not set');
     }
 
+    // Validate file exists and is readable
+    const fs = require('fs');
+    if (!fs.existsSync(filePath)) {
+        throw new Error('File does not exist');
+    }
+    
+    // Get file stats to check size
+    const stats = fs.statSync(filePath);
+    if (stats.size > 10 * 1024 * 1024) {
+        throw new Error('File too large for upload (>10MB)');
+    }
+
     const fileManager = new GoogleAIFileManager(apiKey);
     
     console.log(`      📤 Uploading file to Gemini...`);
     
+    // Use only the basename for display name to avoid path disclosure
+    const basename = filePath.split('/').pop() || 'document.pdf';
+    
     const uploadResult = await fileManager.uploadFile(filePath, {
         mimeType,
-        displayName: filePath.split('/').pop() || 'document.pdf'
+        displayName: basename
     });
     
-    console.log(`      ✅ File uploaded: ${uploadResult.file.uri}`);
+    console.log(`      ✅ File uploaded successfully`);
     
     return uploadResult.file.uri;
 }
@@ -69,7 +84,7 @@ export async function analyzePdfWithGemini(
     }
 
     try {
-        console.log(`      🤖 Analyzing ${filename} with Gemini...`);
+        console.log(`      🤖 Analyzing PDF with Gemini...`);
         
         // Get mime type
         const mimeType = mime.lookup(filePath) || 'application/pdf';
@@ -100,12 +115,13 @@ export async function analyzePdfWithGemini(
         const response = result.response;
         const text = response.text();
         
-        console.log(`      ✅ Analysis complete for ${filename}`);
+        console.log(`      ✅ Analysis complete`);
         
         return text;
     } catch (error: any) {
-        console.error(`      ❌ Gemini analysis failed for ${filename}:`, error.message);
-        throw error;
+        // Don't log detailed error messages which might contain sensitive info
+        console.error(`      ❌ Gemini analysis failed`);
+        throw new Error('Analysis failed');
     }
 }
 
@@ -135,8 +151,8 @@ export async function analyzeMultiplePdfs(
             const analysis = await analyzePdfWithGemini(pdf.filePath!, prompt, pdf.filename);
             analyses.push(`\n**Analysis of ${pdf.filename}:**\n${analysis}`);
         } catch (error: any) {
-            console.error(`      ⚠️  Skipping ${pdf.filename} due to error:`, error.message);
-            analyses.push(`\n**${pdf.filename}:** Analysis failed - ${error.message}`);
+            console.error(`      ⚠️  Skipping PDF due to error`);
+            analyses.push(`\n**${pdf.filename}:** Analysis failed`);
         }
     }
     

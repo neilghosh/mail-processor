@@ -351,99 +351,101 @@ app.post('/api/tasks/process-emails', authenticateRequest, async (req, res) => {
                                 const pdfResults: PdfProcessingResult[] = [];
                                 const tempDir = `/tmp/mail-attachments/${user.google_id}/${message.id}`;
 
-                                // Process each PDF
-                                for (const attachment of pdfAttachments) {
-                                    // Skip files larger than 10MB
-                                    if (attachment.size > 10 * 1024 * 1024) {
-                                        console.log(`      ⏭️  Skipping ${attachment.filename} (too large: ${Math.round(attachment.size / 1024 / 1024)}MB)`);
-                                        pdfResults.push({
-                                            filename: attachment.filename,
-                                            size: attachment.size,
-                                            decryptionStatus: 'skipped',
-                                            error: 'File too large (>10MB)'
-                                        });
-                                        continue;
-                                    }
-
-                                    // Download PDF
-                                    const pdfPath = await downloadPdfAttachment(
-                                        gmail,
-                                        'me',
-                                        message.id!,
-                                        attachment.attachmentId,
-                                        attachment.filename
-                                    );
-
-                                    if (!pdfPath) {
-                                        pdfResults.push({
-                                            filename: attachment.filename,
-                                            size: attachment.size,
-                                            decryptionStatus: 'failed',
-                                            error: 'Download failed'
-                                        });
-                                        continue;
-                                    }
-
-                                    // Check if password protected
-                                    const isProtected = await isPasswordProtected(pdfPath);
-                                    
-                                    let finalPath = pdfPath;
-                                    let decryptionStatus: 'success' | 'failed' | 'not_needed' | 'skipped' = 'not_needed';
-
-                                    if (isProtected) {
-                                        console.log(`      🔒 PDF is password protected`);
-                                        const password = getPasswordForSubject(subject);
-                                        
-                                        if (password) {
-                                            const decryptedPath = await decryptPdf(pdfPath, password);
-                                            if (decryptedPath) {
-                                                finalPath = decryptedPath;
-                                                decryptionStatus = 'success';
-                                            } else {
-                                                decryptionStatus = 'failed';
-                                            }
-                                        } else {
-                                            console.log(`      ⚠️  No password found for subject keywords`);
-                                            decryptionStatus = 'skipped';
+                                try {
+                                    // Process each PDF
+                                    for (const attachment of pdfAttachments) {
+                                        // Skip files larger than 10MB
+                                        if (attachment.size > 10 * 1024 * 1024) {
+                                            console.log(`      ⏭️  Skipping attachment (too large: ${Math.round(attachment.size / 1024 / 1024)}MB)`);
+                                            pdfResults.push({
+                                                filename: attachment.filename,
+                                                size: attachment.size,
+                                                decryptionStatus: 'skipped',
+                                                error: 'File too large (>10MB)'
+                                            });
+                                            continue;
                                         }
+
+                                        // Download PDF
+                                        const pdfPath = await downloadPdfAttachment(
+                                            gmail,
+                                            'me',
+                                            message.id!,
+                                            attachment.attachmentId,
+                                            attachment.filename
+                                        );
+
+                                        if (!pdfPath) {
+                                            pdfResults.push({
+                                                filename: attachment.filename,
+                                                size: attachment.size,
+                                                decryptionStatus: 'failed',
+                                                error: 'Download failed'
+                                            });
+                                            continue;
+                                        }
+
+                                        // Check if password protected
+                                        const isProtected = await isPasswordProtected(pdfPath);
+                                        
+                                        let finalPath = pdfPath;
+                                        let decryptionStatus: 'success' | 'failed' | 'not_needed' | 'skipped' = 'not_needed';
+
+                                        if (isProtected) {
+                                            console.log(`      🔒 PDF is password protected`);
+                                            const password = getPasswordForSubject(subject);
+                                            
+                                            if (password) {
+                                                const decryptedPath = await decryptPdf(pdfPath, password);
+                                                if (decryptedPath) {
+                                                    finalPath = decryptedPath;
+                                                    decryptionStatus = 'success';
+                                                } else {
+                                                    decryptionStatus = 'failed';
+                                                }
+                                            } else {
+                                                console.log(`      ⚠️  No password configured for this subject`);
+                                                decryptionStatus = 'skipped';
+                                            }
+                                        }
+
+                                        pdfResults.push({
+                                            filename: attachment.filename,
+                                            size: attachment.size,
+                                            decryptionStatus,
+                                            filePath: decryptionStatus !== 'failed' ? finalPath : undefined
+                                        });
                                     }
 
-                                    pdfResults.push({
-                                        filename: attachment.filename,
-                                        size: attachment.size,
-                                        decryptionStatus,
-                                        filePath: decryptionStatus !== 'failed' ? finalPath : undefined
-                                    });
-                                }
-
-                                // Analyze with Gemini if subject matches a prompt
-                                const prompt = getPromptForSubject(subject);
-                                
-                                if (prompt && process.env.GEMINI_API_KEY) {
-                                    try {
-                                        console.log(`      🤖 Analyzing PDFs with Gemini AI...`);
-                                        const analysis = await analyzeMultiplePdfs(pdfResults, prompt);
-                                        emailDetail.geminiAnalysis = analysis;
-                                    } catch (geminiError: any) {
-                                        console.error(`      ❌ Gemini analysis failed:`, geminiError.message);
-                                        emailDetail.geminiAnalysis = `Analysis failed: ${geminiError.message}`;
+                                    // Analyze with Gemini if subject matches a prompt
+                                    const prompt = getPromptForSubject(subject);
+                                    
+                                    if (prompt && process.env.GEMINI_API_KEY) {
+                                        try {
+                                            console.log(`      🤖 Analyzing PDFs with Gemini AI...`);
+                                            const analysis = await analyzeMultiplePdfs(pdfResults, prompt);
+                                            emailDetail.geminiAnalysis = analysis;
+                                        } catch (geminiError: any) {
+                                            console.error(`      ❌ Gemini analysis failed`);
+                                            emailDetail.geminiAnalysis = `Analysis failed`;
+                                        }
+                                    } else if (!prompt) {
+                                        console.log(`      ⏭️  No matching prompt for subject, skipping Gemini analysis`);
+                                    } else {
+                                        console.log(`      ⚠️  GEMINI_API_KEY not set, skipping analysis`);
                                     }
-                                } else if (!prompt) {
-                                    console.log(`      ⏭️  No matching prompt for subject, skipping Gemini analysis`);
-                                } else {
-                                    console.log(`      ⚠️  GEMINI_API_KEY not set, skipping analysis`);
+
+                                    // Add PDF attachment info to email detail
+                                    emailDetail.pdfAttachments = pdfResults.map(pdf => ({
+                                        filename: pdf.filename,
+                                        size: pdf.size,
+                                        decryptionStatus: pdf.decryptionStatus,
+                                        error: pdf.error
+                                    }));
+                                } finally {
+                                    // Always cleanup temp files, even on error
+                                    cleanupTempFiles(tempDir);
                                 }
-
-                                // Add PDF attachment info to email detail
-                                emailDetail.pdfAttachments = pdfResults.map(pdf => ({
-                                    filename: pdf.filename,
-                                    size: pdf.size,
-                                    decryptionStatus: pdf.decryptionStatus,
-                                    error: pdf.error
-                                }));
-
-                                // Cleanup temp files
-                                cleanupTempFiles(tempDir);
                             }
 
                             emailDetails.push(emailDetail);
